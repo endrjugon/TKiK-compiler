@@ -21,4 +21,5 @@ Program przyjmuje na wejściu plik z kodem źródłowym Pythona (`.py`), obsług
 * **Python 3.13**
 
 ### Sposób realizacji skanera/parsera
-Użycie zewnętrznego generatora skanerów i parserów dla języka Python – Lark
+Użycie zewnętrznego generatora skanerów i parserów dla języka Python :  
+**Lark**
