@@ -4,7 +4,7 @@
 * **Andrzej Gondek**, 
 * **Krzysztof Gniewek**
 ## Dane kontaktowe :  
-* Andrzej Gondek -   
+* Andrzej Gondek - agondek@student.agh.edu.pl
 * Krzysztof Gniewek - gniewek@student.agh.edu.pl
 
 ## Założenia programu
