@@ -101,78 +101,79 @@ Użycie zewnętrznego generatora skanerów i parserów :
 ### Gramatyka 
 
 ```
-MiniPythonParser ::= prog
+// --- STRUKTURA GŁÓWNA ---
+prog        : (statement)* EOF ;
 
-prog ::= (statement)* EOF
+statement   : simple_stmt NEWLINE
+            | compound_stmt ;
 
-statement ::= simple_stmt NEWLINE | compound_stmt
+// --- BLOKI KODU (Środowisko wyk.) ---
+suite       : simple_stmt NEWLINE 
+            | NEWLINE INDENT statement+ DEDENT ;
 
-suite ::= simple_stmt NEWLINE | NEWLINE INDENT statement+ DEDENT
+// --- INSTRUKCJE ZŁOŻONE (Control Flow, Funkcje, Klasy, Błędy) ---
+compound_stmt : if_stmt | while_stmt | for_stmt | try_stmt | funcdef | classdef ;
 
-compound_stmt ::= if_stmt | while_stmt | for_stmt | try_stmt | funcdef | classdef
+if_stmt     : IF expr COLON suite (ELIF expr COLON suite)* (ELSE COLON suite)? ;
+while_stmt  : WHILE expr COLON suite ;
+for_stmt    : FOR ID IN expr COLON suite ;
+try_stmt    : TRY COLON suite (EXCEPT ID? COLON suite)+ (FINALLY COLON suite)? ;
 
-if_stmt ::= IF expr COLON suite (ELIF expr COLON suite)* (ELSE COLON suite)?
+funcdef     : DEF ID LPAREN parameters? RPAREN COLON suite ;
+classdef    : CLASS ID (LPAREN ID RPAREN)? COLON suite ;
 
-while_stmt ::= WHILE expr COLON suite
+// --- INSTRUKCJE PROSTE ---
+simple_stmt : assign_stmt
+            | expr_stmt
+            | return_stmt
+            | import_stmt
+            | raise_stmt
+            | pass_stmt
+            | flow_stmt ;
 
-for_stmt ::= FOR ID IN expr COLON suite
+assign_stmt : expr ASSIGN expr ;
+expr_stmt   : expr ;
+return_stmt : RETURN expr? ;
+import_stmt : IMPORT ID | FROM ID IMPORT ID ;
+raise_stmt  : RAISE expr ;
+pass_stmt   : PASS ;
+flow_stmt   : BREAK | CONTINUE ;
 
-try_stmt ::= TRY COLON suite (EXCEPT ID? COLON suite)+ (FINALLY COLON suite)?
+// --- PARAMETRY I ARGUMENTY ---
+parameters  : ID (COMMA ID)* ;
+arguments   : expr (COMMA expr)* ;
 
-funcdef ::= DEF ID LPAREN parameters? RPAREN COLON suite
+// --- WYRAŻENIA (Typy, Operatory) ---
+expr        : expr (STAR | DIV | MOD) expr                    # MulDivExpr
+            | expr (PLUS | MINUS) expr                        # AddSubExpr
+            | expr (EQ | NEQ | LT | GT | LE | GE) expr        # CompExpr
+            | NOT expr                                        # NotExpr
+            | expr AND expr                                   # AndExpr
+            | expr OR expr                                    # OrExpr
+            | atom LPAREN arguments? RPAREN                   # CallExpr
+            | atom DOT ID                                     # MemberAccessExpr
+            | atom LBRACK expr RBRACK                         # IndexExpr
+            | atom                                            # AtomExpr
+            ;
 
-classdef ::= CLASS ID (LPAREN ID RPAREN)? COLON suite
+// --- ATOMY (Typy kolekcyjne, Comprehensions, Literały) ---
+atom        : INT                                             # IntAtom
+            | FLOAT                                           # FloatAtom
+            | STRING                                          # StringAtom
+            | TRUE                                            # BoolAtom
+            | FALSE                                           # BoolAtom
+            | NONE                                            # NoneAtom
+            | ID                                              # IdAtom
+            | list_maker                                      # ListAtom
+            | dict_maker                                      # DictAtom
+            | set_maker                                       # SetAtom
+            | LPAREN expr RPAREN                              # ParenExpr
+            ;
 
-simple_stmt ::= assign_stmt | expr_stmt | return_stmt | import_stmt | raise_stmt | pass_stmt | flow_stmt
+// --- KOLEKCJE I COMPREHENSIONS ---
+list_maker  : LBRACK (expr (comp_clause | (COMMA expr)*))? RBRACK ;
+set_maker   : LBRACE expr (comp_clause | (COMMA expr)*) RBRACE ;
+dict_maker  : LBRACE (dict_kv (comp_clause | (COMMA dict_kv)*))? RBRACE ;
 
-assign_stmt ::= expr ASSIGN expr
-
-expr_stmt ::= expr
-
-return_stmt ::= RETURN expr?
-
-import_stmt ::= IMPORT ID | FROM ID IMPORT ID
-
-raise_stmt ::= RAISE expr
-
-pass_stmt ::= PASS
-
-flow_stmt ::= BREAK | CONTINUE
-
-parameters ::= ID (COMMA ID)*
-
-arguments ::= expr (COMMA expr)*
-
-expr ::= MulDivExpr | AddSubExpr | CompExpr | NotExpr | AndExpr | OrExpr | CallExpr | MemberAccessExpr | IndexExpr | AtomExpr
-
-MulDivExpr ::= expr (STAR | DIV | MOD) expr
-
-AddSubExpr ::= expr (PLUS | MINUS) expr
-
-CompExpr ::= expr (EQ | NEQ | LT | GT | LE | GE) expr
-
-NotExpr ::= NOT expr
-
-AndExpr ::= expr AND expr
-
-OrExpr ::= expr OR expr
-
-CallExpr ::= atom LPAREN arguments? RPAREN
-
-MemberAccessExpr ::= atom DOT ID
-
-IndexExpr ::= atom LBRACK expr RBRACK
-
-AtomExpr ::= atom
-
-atom ::= INT | FLOAT | STRING | TRUE | FALSE | NONE | ID | list_maker | dict_maker | set_maker | LPAREN expr RPAREN
-
-list_maker ::= LBRACK (expr (comp_clause | (COMMA expr)*))? RBRACK
-
-set_maker ::= LBRACE expr (comp_clause | (COMMA expr)*) RBRACE
-
-dict_maker ::= LBRACE (dict_kv (comp_clause | (COMMA dict_kv)*))? RBRACE
-
-dict_kv ::= expr COLON expr
-
-comp_clause ::= FOR ID IN expr (IF expr)?
+dict_kv     : expr COLON expr ;
+comp_clause : FOR ID IN expr (IF expr)? ;
