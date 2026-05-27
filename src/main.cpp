@@ -17,6 +17,8 @@
 #include "PythonRustLexer.h"
 #include "PythonRustParser.h"
 
+#include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <set>
@@ -971,24 +973,65 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Driver
+// Conversion entry point (shared by the CLI and the web server)
 // ---------------------------------------------------------------------------
-class CountingErrorListener : public antlr4::BaseErrorListener {
+class CollectingErrorListener : public antlr4::BaseErrorListener {
 public:
     int count = 0;
+    std::string messages;
     void syntaxError(antlr4::Recognizer *, antlr4::Token *, size_t line,
                      size_t col, const std::string &msg, std::exception_ptr) override {
         count++;
-        std::cerr << "Syntax error (line " << line << ":" << col << "): " << msg << "\n";
+        messages += "line " + std::to_string(line) + ":" + std::to_string(col) +
+                    "  " + msg + "\n";
     }
 };
 
+// Returns true on success (out = Rust). On failure, err = syntax error report.
+// Non-static: also called from the web server translation unit (webserver.cpp).
+bool convertSource(const std::string &source, std::string &out, std::string &err) {
+    antlr4::ANTLRInputStream input(source);
+    PythonRustLexer lexer(&input);
+    antlr4::CommonTokenStream tokens(&lexer);
+    PythonRustParser parser(&tokens);
+
+    CollectingErrorListener errs;
+    lexer.removeErrorListeners();
+    parser.removeErrorListeners();
+    parser.addErrorListener(&errs);
+
+    P::ProgramContext *tree = parser.program();
+    if (errs.count > 0) {
+        err = errs.messages;
+        return false;
+    }
+    RustGen gen;
+    out = gen.generate(tree);
+    return true;
+}
+
+// Implemented in webserver.cpp (isolated from ANTLR headers to avoid the
+// <windows.h> macro clashes, e.g. ERROR / IN).
+int runServer(int port);
+
+// ---------------------------------------------------------------------------
+// Driver
+// ---------------------------------------------------------------------------
 int main(int argc, char **argv) {
     if (argc < 2) {
-        std::cerr << "Usage: pyrust <input.py> [-o output.rs]\n";
+        std::cerr << "Usage:\n"
+                  << "  pyrust <input.py> [-o output.rs]   convert a file\n"
+                  << "  pyrust --serve [port]              launch the web UI\n";
         return 2;
     }
-    std::string inPath = argv[1];
+
+    std::string first = argv[1];
+    if (first == "--serve") {
+        int port = (argc >= 3) ? std::atoi(argv[2]) : 8756;
+        return runServer(port);
+    }
+
+    std::string inPath = first;
     std::string outPath;
     for (int i = 2; i < argc; i++) {
         std::string a = argv[i];
@@ -1005,27 +1048,12 @@ int main(int argc, char **argv) {
     if (!ifs) { std::cerr << "Cannot open input file: " << inPath << "\n"; return 2; }
     std::stringstream buf;
     buf << ifs.rdbuf();
-    std::string source = buf.str();
 
-    antlr4::ANTLRInputStream input(source);
-    PythonRustLexer lexer(&input);
-    antlr4::CommonTokenStream tokens(&lexer);
-    PythonRustParser parser(&tokens);
-
-    CountingErrorListener errs;
-    lexer.removeErrorListeners();
-    parser.removeErrorListeners();
-    parser.addErrorListener(&errs);
-
-    P::ProgramContext *tree = parser.program();
-    if (errs.count > 0) {
-        std::cerr << "Aborting: " << errs.count << " syntax error(s).\n";
+    std::string rust, err;
+    if (!convertSource(buf.str(), rust, err)) {
+        std::cerr << err << "Aborting due to syntax error(s).\n";
         return 1;
     }
-
-    RustGen gen;
-    std::string rust = gen.generate(tree);
-
     std::ofstream ofs(outPath, std::ios::binary);
     if (!ofs) { std::cerr << "Cannot write output file: " << outPath << "\n"; return 2; }
     ofs << rust;

@@ -62,14 +62,16 @@ if (-not (Test-Path $lib)) {
 Write-Host "Building pyrust.exe..."
 $srcs = @(
     (Join-Path $root "src/main.cpp"),
+    (Join-Path $root "src/webserver.cpp"),
     (Join-Path $root "src/PythonLexerBase.cpp"),
     (Join-Path $gen  "PythonRustLexer.cpp"),
     (Join-Path $gen  "PythonRustParser.cpp"),
     (Join-Path $gen  "PythonRustParserBaseVisitor.cpp"),
     (Join-Path $gen  "PythonRustParserVisitor.cpp")
 )
+# -lws2_32 provides Winsock for the `--serve` web UI.
 & g++ @cxxflags "-I$rtSrc" "-I$(Join-Path $root 'src')" "-I$gen" `
-    $srcs $lib -static -static-libgcc -static-libstdc++ -o $exe
+    $srcs $lib -static -static-libgcc -static-libstdc++ -lws2_32 -o $exe
 if ($LASTEXITCODE -ne 0) { throw "Failed to build pyrust.exe" }
 
 Write-Host "Done: $exe"
