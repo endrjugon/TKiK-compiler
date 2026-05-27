@@ -69,9 +69,9 @@ $srcs = @(
     (Join-Path $gen  "PythonRustParserBaseVisitor.cpp"),
     (Join-Path $gen  "PythonRustParserVisitor.cpp")
 )
-# -lws2_32 provides Winsock for the `--serve` web UI.
+# -lws2_32 provides Winsock and -pthread the std::thread support for `--serve`.
 & g++ @cxxflags "-I$rtSrc" "-I$(Join-Path $root 'src')" "-I$gen" `
-    $srcs $lib -static -static-libgcc -static-libstdc++ -lws2_32 -o $exe
+    $srcs $lib -static -static-libgcc -static-libstdc++ -lws2_32 -pthread -o $exe
 if ($LASTEXITCODE -ne 0) { throw "Failed to build pyrust.exe" }
 
 Write-Host "Done: $exe"

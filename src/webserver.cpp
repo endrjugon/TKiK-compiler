@@ -20,6 +20,7 @@ using socket_t = SOCKET;
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 using socket_t = int;
 #define INVALID_SOCKET (-1)
@@ -30,6 +31,7 @@ using socket_t = int;
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <thread>
 
 // Defined in main.cpp.
 bool convertSource(const std::string &source, std::string &out, std::string &err);
@@ -64,8 +66,14 @@ static const char *PAGE = R"HTML(<!doctype html>
              font-size:13px; white-space:pre; tab-size:4; }
   #out { background:#0b1021; color:#d6e2ff; }
   #status { padding:6px 16px; font-size:13px; background:#111827; color:#9ca3af;
-            font-family: ui-monospace, monospace; white-space:pre-wrap; }
+            font-family: ui-monospace, monospace; white-space:nowrap;
+            overflow:hidden; text-overflow:ellipsis; }
   #status.err { color:#fca5a5; } #status.ok { color:#86efac; }
+  #errors { margin:0; padding:10px 16px; background:#2a0f12; color:#fca5a5;
+            font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+            font-size:13px; white-space:pre; overflow:auto; max-height:35%;
+            border-top:1px solid #7f1d1d; }
+  #errors[hidden] { display:none; }
 </style>
 </head>
 <body>
@@ -82,6 +90,7 @@ static const char *PAGE = R"HTML(<!doctype html>
   <section class="pane"><h2>Rust</h2><textarea id="out" spellcheck="false" readonly></textarea></section>
 </main>
 <div id="status">Ready.</div>
+<pre id="errors" hidden></pre>
 <script>
 const $ = id => document.getElementById(id);
 $('in').value = `x = 5
@@ -96,13 +105,23 @@ print(add(2, 3))
 print([i * i for i in range(5)])
 `;
 async function convert() {
-  const s = $('status'); s.className = ''; s.textContent = 'Converting...';
+  const s = $('status'), errBox = $('errors');
+  s.className = ''; s.textContent = 'Converting...';
+  errBox.hidden = true; errBox.textContent = '';
   try {
     const res = await fetch('/convert', { method:'POST', body: $('in').value });
     const text = await res.text();
-    $('out').value = text;
-    if (res.ok) { s.className = 'ok'; s.textContent = 'OK - converted.'; }
-    else { s.className = 'err'; s.textContent = 'Syntax error:\n' + text; }
+    if (res.ok) {
+      $('out').value = text;
+      s.className = 'ok'; s.textContent = 'Converted OK.';
+    } else {
+      $('out').value = '';              // keep the Rust pane clean on failure
+      errBox.textContent = text;
+      errBox.hidden = false;
+      const m = text.match(/(\d+) errors?\./);
+      s.className = 'err';
+      s.textContent = (m ? m[1] : 'Syntax') + ' error(s) in the Python source — see below.';
+    }
   } catch (e) { s.className = 'err'; s.textContent = 'Server error: ' + e; }
 }
 $('convert').onclick = convert;
@@ -141,7 +160,7 @@ static void sendResponse(socket_t c, const std::string &status,
     sendAll(c, r);
 }
 
-static void handleConnection(socket_t c) {
+static void serveRequest(socket_t c) {
     std::string data;
     char buf[8192];
     size_t headerEnd = std::string::npos;
@@ -186,6 +205,22 @@ static void handleConnection(socket_t c) {
     }
 }
 
+// Each connection runs on its own thread, so a slow or speculative
+// (browser-preconnect) socket cannot block real requests. A receive timeout
+// lets idle connections clean themselves up.
+static void handleConnection(socket_t c) {
+#ifdef _WIN32
+    DWORD tv = 10000;  // milliseconds
+#else
+    struct timeval tv;
+    tv.tv_sec = 10;
+    tv.tv_usec = 0;
+#endif
+    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+    serveRequest(c);
+    CLOSESOCKET(c);
+}
+
 int runServer(int port) {
 #ifdef _WIN32
     WSADATA wsa;
@@ -208,12 +243,12 @@ int runServer(int port) {
         return 1;
     }
     listen(s, 16);
+    { std::string o, e; convertSource("pass\n", o, e); }  // warm up ANTLR statics
     std::cerr << "pyrust web UI: open http://127.0.0.1:" << port
               << "  (Ctrl+C to stop)\n";
     for (;;) {
         socket_t c = accept(s, nullptr, nullptr);
         if (c == INVALID_SOCKET) continue;
-        handleConnection(c);
-        CLOSESOCKET(c);
+        std::thread(handleConnection, c).detach();
     }
 }

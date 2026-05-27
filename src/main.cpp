@@ -977,17 +977,49 @@ private:
 // ---------------------------------------------------------------------------
 class CollectingErrorListener : public antlr4::BaseErrorListener {
 public:
-    int count = 0;
-    std::string messages;
+    struct Err { size_t line; size_t col; std::string msg; };
+    std::vector<Err> errors;  // both lexer and parser errors land here
     void syntaxError(antlr4::Recognizer *, antlr4::Token *, size_t line,
                      size_t col, const std::string &msg, std::exception_ptr) override {
-        count++;
-        messages += "line " + std::to_string(line) + ":" + std::to_string(col) +
-                    "  " + msg + "\n";
+        errors.push_back({line, col, msg});
     }
 };
 
-// Returns true on success (out = Rust). On failure, err = syntax error report.
+static std::vector<std::string> splitLines(const std::string &s) {
+    std::vector<std::string> lines;
+    std::string cur;
+    for (char c : s) {
+        if (c == '\n') { lines.push_back(cur); cur.clear(); }
+        else if (c != '\r') cur += c;
+    }
+    lines.push_back(cur);
+    return lines;
+}
+
+// Build a human-friendly, compiler-style report: each error shows its
+// location, the message, the offending source line and a caret.
+static std::string formatErrors(const std::vector<CollectingErrorListener::Err> &errs,
+                                const std::string &source) {
+    auto lines = splitLines(source);
+    std::string r;
+    size_t shown = 0;
+    for (const auto &e : errs) {
+        if (shown++ >= 50) { r += "... (further errors omitted)\n\n"; break; }
+        r += "line " + std::to_string(e.line) + ":" + std::to_string(e.col + 1) +
+             ": " + e.msg + "\n";
+        if (e.line >= 1 && e.line <= lines.size()) {
+            const std::string &src = lines[e.line - 1];
+            r += "    " + src + "\n";
+            r += "    " + std::string(e.col, ' ') + "^\n";
+        }
+        r += "\n";
+    }
+    r += std::to_string(errs.size()) +
+         (errs.size() == 1 ? " error.\n" : " errors.\n");
+    return r;
+}
+
+// Returns true on success (out = Rust). On failure, err = formatted error report.
 // Non-static: also called from the web server translation unit (webserver.cpp).
 bool convertSource(const std::string &source, std::string &out, std::string &err) {
     antlr4::ANTLRInputStream input(source);
@@ -995,14 +1027,15 @@ bool convertSource(const std::string &source, std::string &out, std::string &err
     antlr4::CommonTokenStream tokens(&lexer);
     PythonRustParser parser(&tokens);
 
-    CollectingErrorListener errs;
+    CollectingErrorListener listener;
     lexer.removeErrorListeners();
     parser.removeErrorListeners();
-    parser.addErrorListener(&errs);
+    lexer.addErrorListener(&listener);   // capture token-level errors too
+    parser.addErrorListener(&listener);
 
     P::ProgramContext *tree = parser.program();
-    if (errs.count > 0) {
-        err = errs.messages;
+    if (!listener.errors.empty()) {
+        err = formatErrors(listener.errors, source);
         return false;
     }
     RustGen gen;
