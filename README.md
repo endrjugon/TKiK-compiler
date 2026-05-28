@@ -266,6 +266,11 @@ build\pyrust.exe wejscie.py                # zapis do wejscie.rs (obok pliku)
 build\pyrust.exe wejscie.py -o wynik.rs    # jawna ścieżka wyjścia
 ```
 
+Uruchommienie z UI
+```powershell
+build\pyrust.exe --serve
+```
+
 Następnie kod wynikowy można skompilować i uruchomić Rustem:
 
 ```powershell
@@ -310,6 +315,10 @@ g++ -std=c++17 -O2 -I/usr/include/antlr4-runtime -Isrc -Isrc/generated \
 Z katalogu głównego projektu : 
 ```bash
 ./pyrust program.py
+```
+Wersja z UI:
+```bash
+./pyrust --serve
 ```
 
 
