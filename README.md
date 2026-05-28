@@ -359,10 +359,10 @@ build\pyrust.exe examples/tuples.py
 Wygenerowany fragment [`examples/tuples.rs`](examples/tuples.rs)
 
 
-W katalogu `examples/` znajdują się dalsze przykłady: `kalkulator.py`
-(funkcje, warunki, pętla `while`) oraz `features.py` (klasy, wyrażenia listowe,
-słowniki, zbiory) wraz z wynikami `*.rs`.
-
+W katalogu `examples/` znajdują się dalsze przykłady: 
+- [`kalkulator.py`](examples/kalkulator.py)  - (funkcje, warunki, pętla `while`) - [`kalkulator.rs`](examples/kalkulator.rs)
+- [`features.py`](examples/features.py) - (klasy, wyrażenia listowe, słowniki, zbiory) - [`features.rs`](examples/features.rs)
+- [`dynamic.py`](examples/dynamic.py) - (test dynamicznego typowania) - [`dynamic.rs`](examples/dynamic.rs)
 ## Struktura projektu
 
 ```
