@@ -237,7 +237,7 @@ comp_clause   : FOR target_list IN expr (IF expr)? comp_clause? ;
 
 Pliki generowane przez ANTLR znajdują się w `src/generated/`.
 
-## Krótka instrukcja obsługi
+## Krótka instrukcja obsługi (Windows)
 
 ### Wymagania
 
@@ -272,6 +272,46 @@ Następnie kod wynikowy można skompilować i uruchomić Rustem:
 rustc wynik.rs -o wynik.exe
 ./wynik.exe
 ```
+
+## Krótka instrukcja obsługi (Linux)
+
+### Wymagania
+
+Na systemie powinny być zainstalowane pakiety:
+
+- Arch Linux
+```bash
+sudo pacman -S jre-openjdk gcc antlr4-runtime
+```
+- Ubuntu / Debian 
+```bash
+sudo apt install default-jre build-essential libantlr4-runtime
+```
+- macOS (Homebrew)
+```bash
+brew install openjdk antlr4-cpp-runtime
+```
+
+### Budowanie
+
+W konsoli, z folderu projektu:
+```bash
+java -jar third_party/antlr-4.13.2-complete.jar -Dlanguage=Cpp -visitor -no-listener \
+     -o src/generated grammar/PythonRustLexer.g4 grammar/PythonRustParser.g4
+```
+
+```bash
+g++ -std=c++17 -O2 -I/usr/include/antlr4-runtime -Isrc -Isrc/generated \
+    src/*.cpp src/generated/*.cpp -lantlr4-runtime -o pyrust
+```
+
+### Uruchomienie
+
+Z katalogu głównego projektu : 
+```bash
+./pyrust program.py
+```
+
 
 ## Przykład użycia
 
