@@ -318,12 +318,28 @@ Z katalogu głównego projektu :
 Plik wejściowy `examples/tuples.py`:
 
 ```python
+def divmod_pair(a: int, b: int) -> tuple[int, int]:
+    return a / b, a % b
+
+
 def swap(a: int, b: int) -> tuple[int, int]:
     return b, a
+
 
 point: tuple[int, int] = (3, 4)
 x, y = point
 print("x:", x, "y:", y)
+
+a = 1
+b = 2
+a, b = b, a
+print("swapped:", a, b)
+
+pair = (10, 20)
+print("first:", pair[0], "second:", pair[1])
+
+singleton = (42,)
+print("singleton:", singleton[0])
 
 pairs = [(1, 2), (3, 4), (5, 6)]
 for left, right in pairs:
@@ -331,28 +347,17 @@ for left, right in pairs:
 ```
 
 Polecenie:
-
+(Windows)
 ```powershell
 build\pyrust.exe examples/tuples.py
 ```
-
-Wygenerowany fragment `examples/tuples.rs`:
-
-```rust
-fn swap(a: i64, b: i64) -> (i64, i64) {
-    return (b, a);
-}
-
-fn main() {
-    let mut point: (i64, i64) = (3, 4);
-    let (mut x, mut y) = point;
-    println!("{} {} {} {}", "x:".to_string(), x, "y:".to_string(), y);
-    let mut pairs = vec![(1, 2), (3, 4), (5, 6)];
-    for (left, right) in pairs.iter().cloned() {
-        println!("{}", (left + right));
-    }
-}
+(Linux)
+```bash
+./pyrust examples/tuples.py
 ```
+
+Wygenerowany fragment [`examples/tuples.rs`](examples/tuples.rs)
+
 
 W katalogu `examples/` znajdują się dalsze przykłady: `kalkulator.py`
 (funkcje, warunki, pętla `while`) oraz `features.py` (klasy, wyrażenia listowe,
