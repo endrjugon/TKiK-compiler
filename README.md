@@ -237,7 +237,7 @@ comp_clause   : FOR target_list IN expr (IF expr)? comp_clause? ;
 
 Pliki generowane przez ANTLR znajdują się w `src/generated/`.
 
-## Krótka instrukcja obsługi
+## Krótka instrukcja obsługi (Windows)
 
 ### Wymagania
 
@@ -266,6 +266,11 @@ build\pyrust.exe wejscie.py                # zapis do wejscie.rs (obok pliku)
 build\pyrust.exe wejscie.py -o wynik.rs    # jawna ścieżka wyjścia
 ```
 
+Uruchommienie z UI
+```powershell
+build\pyrust.exe --serve
+```
+
 Następnie kod wynikowy można skompilować i uruchomić Rustem:
 
 ```powershell
@@ -273,17 +278,77 @@ rustc wynik.rs -o wynik.exe
 ./wynik.exe
 ```
 
+## Krótka instrukcja obsługi (Linux)
+
+### Wymagania
+
+Na systemie powinny być zainstalowane pakiety:
+
+- Arch Linux
+```bash
+sudo pacman -S jre-openjdk gcc antlr4-runtime
+```
+- Ubuntu / Debian 
+```bash
+sudo apt install default-jre build-essential libantlr4-runtime
+```
+- macOS (Homebrew)
+```bash
+brew install openjdk antlr4-cpp-runtime
+```
+
+### Budowanie
+
+W konsoli, z folderu projektu:
+```bash
+java -jar third_party/antlr-4.13.2-complete.jar -Dlanguage=Cpp -visitor -no-listener \
+     -o src/generated grammar/PythonRustLexer.g4 grammar/PythonRustParser.g4
+```
+
+```bash
+g++ -std=c++17 -O2 -I/usr/include/antlr4-runtime -Isrc -Isrc/generated \
+    src/*.cpp src/generated/*.cpp -lantlr4-runtime -o pyrust
+```
+
+### Uruchomienie
+
+Z katalogu głównego projektu : 
+```bash
+./pyrust program.py
+```
+Wersja z UI:
+```bash
+./pyrust --serve
+```
+
+
 ## Przykład użycia
 
 Plik wejściowy `examples/tuples.py`:
 
 ```python
+def divmod_pair(a: int, b: int) -> tuple[int, int]:
+    return a / b, a % b
+
+
 def swap(a: int, b: int) -> tuple[int, int]:
     return b, a
+
 
 point: tuple[int, int] = (3, 4)
 x, y = point
 print("x:", x, "y:", y)
+
+a = 1
+b = 2
+a, b = b, a
+print("swapped:", a, b)
+
+pair = (10, 20)
+print("first:", pair[0], "second:", pair[1])
+
+singleton = (42,)
+print("singleton:", singleton[0])
 
 pairs = [(1, 2), (3, 4), (5, 6)]
 for left, right in pairs:
@@ -291,33 +356,22 @@ for left, right in pairs:
 ```
 
 Polecenie:
-
+(Windows)
 ```powershell
 build\pyrust.exe examples/tuples.py
 ```
-
-Wygenerowany fragment `examples/tuples.rs`:
-
-```rust
-fn swap(a: i64, b: i64) -> (i64, i64) {
-    return (b, a);
-}
-
-fn main() {
-    let mut point: (i64, i64) = (3, 4);
-    let (mut x, mut y) = point;
-    println!("{} {} {} {}", "x:".to_string(), x, "y:".to_string(), y);
-    let mut pairs = vec![(1, 2), (3, 4), (5, 6)];
-    for (left, right) in pairs.iter().cloned() {
-        println!("{}", (left + right));
-    }
-}
+(Linux)
+```bash
+./pyrust examples/tuples.py
 ```
 
-W katalogu `examples/` znajdują się dalsze przykłady: `kalkulator.py`
-(funkcje, warunki, pętla `while`) oraz `features.py` (klasy, wyrażenia listowe,
-słowniki, zbiory) wraz z wynikami `*.rs`.
+Wygenerowany fragment [`examples/tuples.rs`](examples/tuples.rs)
 
+
+W katalogu `examples/` znajdują się dalsze przykłady: 
+- [`kalkulator.py`](examples/kalkulator.py)  - (funkcje, warunki, pętla `while`) - [`kalkulator.rs`](examples/kalkulator.rs)
+- [`features.py`](examples/features.py) - (klasy, wyrażenia listowe, słowniki, zbiory) - [`features.rs`](examples/features.rs)
+- [`dynamic.py`](examples/dynamic.py) - (test dynamicznego typowania) - [`dynamic.rs`](examples/dynamic.rs)
 ## Struktura projektu
 
 ```
