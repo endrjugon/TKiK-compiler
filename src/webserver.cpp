@@ -35,6 +35,7 @@ using socket_t = int;
 
 // Defined in main.cpp.
 bool convertSource(const std::string &source, std::string &out, std::string &err);
+bool checkSyntax(const std::string &source, std::string &err);
 
 static const char *PAGE = R"HTML(<!doctype html>
 <html lang="en">
@@ -104,10 +105,21 @@ def add(a, b):
 print(add(2, 3))
 print([i * i for i in range(5)])
 `;
+function showErrors(text) {
+  const m = text.match(/(\d+) errors?\./);
+  $('errors').textContent = text;
+  $('errors').hidden = false;
+  return m ? m[1] : '?';
+}
+function clearErrors() {
+  $('errors').hidden = true; $('errors').textContent = '';
+}
+
 async function convert() {
-  const s = $('status'), errBox = $('errors');
+  clearTimeout(checkTimer);                  // cancel any pending live check
+  const s = $('status');
   s.className = ''; s.textContent = 'Converting...';
-  errBox.hidden = true; errBox.textContent = '';
+  clearErrors();
   try {
     const res = await fetch('/convert', { method:'POST', body: $('in').value });
     const text = await res.text();
@@ -115,16 +127,35 @@ async function convert() {
       $('out').value = text;
       s.className = 'ok'; s.textContent = 'Converted OK.';
     } else {
-      $('out').value = '';              // keep the Rust pane clean on failure
-      errBox.textContent = text;
-      errBox.hidden = false;
-      const m = text.match(/(\d+) errors?\./);
+      $('out').value = '';                   // keep the Rust pane clean on failure
+      const n = showErrors(text);
       s.className = 'err';
-      s.textContent = (m ? m[1] : 'Syntax') + ' error(s) in the Python source — see below.';
+      s.textContent = n + ' syntax error(s) — see below.';
     }
   } catch (e) { s.className = 'err'; s.textContent = 'Server error: ' + e; }
 }
 $('convert').onclick = convert;
+
+// Live syntax check: lex + parse only, no code generation. Updates the
+// errors panel and status as you type; the Rust pane is left untouched.
+let checkTimer = null;
+async function liveCheck() {
+  try {
+    const res = await fetch('/check', { method:'POST', body: $('in').value });
+    const text = await res.text();
+    const s = $('status');
+    if (res.ok) {
+      clearErrors();
+      s.className = 'ok'; s.textContent = 'Syntax OK.';
+    } else {
+      const n = showErrors(text);
+      s.className = 'err'; s.textContent = n + ' syntax error(s).';
+    }
+  } catch (e) { /* silent for live checks */ }
+}
+function scheduleCheck() { clearTimeout(checkTimer); checkTimer = setTimeout(liveCheck, 400); }
+$('in').addEventListener('input', scheduleCheck);
+liveCheck();                                  // initial check on page load
 $('file').onchange = e => {
   const f = e.target.files[0]; if (!f) return;
   const r = new FileReader(); r.onload = () => { $('in').value = r.result; }; r.readAsText(f);
@@ -198,6 +229,12 @@ static void serveRequest(socket_t c) {
         std::string rust, err;
         if (convertSource(body, rust, err))
             sendResponse(c, "200 OK", "text/plain; charset=utf-8", rust);
+        else
+            sendResponse(c, "400 Bad Request", "text/plain; charset=utf-8", err);
+    } else if (method == "POST" && path == "/check") {
+        std::string err;
+        if (checkSyntax(body, err))
+            sendResponse(c, "200 OK", "text/plain; charset=utf-8", "");
         else
             sendResponse(c, "400 Bad Request", "text/plain; charset=utf-8", err);
     } else {

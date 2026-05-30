@@ -1019,6 +1019,359 @@ static std::string formatErrors(const std::vector<CollectingErrorListener::Err> 
     return r;
 }
 
+// ---------------------------------------------------------------------------
+// Semantic analysis: a small "compile-time" pass that catches errors the
+// parser cannot see -- references to undefined names, wrong number of
+// arguments to known callees, and misplaced break / continue / return.
+// Runs after a clean parse, before code generation.
+// ---------------------------------------------------------------------------
+
+static P::IdAtomContext *asIdAtomCtx(P::ExprContext *e) {
+    if (auto *ae = dynamic_cast<P::AtomExprContext *>(e))
+        return dynamic_cast<P::IdAtomContext *>(ae->atom());
+    return nullptr;
+}
+
+class SemAnalyzer {
+public:
+    std::vector<CollectingErrorListener::Err> errors;
+
+    void analyze(P::ProgramContext *prog) {
+        collectModuleSymbols(prog);
+        std::set<std::string> noLocals;
+        for (auto *st : prog->stmt())
+            analyzeStmt(st, noLocals, /*inLoop=*/0, /*inFunc=*/0);
+    }
+
+private:
+    std::set<std::string> moduleNames;
+    std::map<std::string, std::pair<int, int>> funcArity;       // name -> {min, max} args
+    std::map<std::string, std::pair<int, int>> classCtorArity;  // ClassName -> __init__ arity
+
+    static const std::set<std::string> &builtins() {
+        static std::set<std::string> b = {
+            "print", "range", "len", "str", "int", "float", "abs",
+            "min", "max", "True", "False", "None"};
+        return b;
+    }
+    static const std::map<std::string, std::pair<int, int>> &builtinArity() {
+        static std::map<std::string, std::pair<int, int>> m = {
+            {"len", {1, 1}}, {"str", {1, 1}}, {"int", {1, 1}},
+            {"float", {1, 1}}, {"abs", {1, 1}},
+            {"min", {2, 2}}, {"max", {2, 2}}, {"range", {1, 3}}};
+        return m;
+    }
+
+    void addErr(antlr4::Token *t, const std::string &m) {
+        if (t) errors.push_back({t->getLine(), t->getCharPositionInLine(), m});
+    }
+
+    // -------- pre-pass: gather module-level names and signatures --------
+
+    void collectModuleSymbols(P::ProgramContext *prog) {
+        for (auto *st : prog->stmt()) collectDefStmt(st, moduleNames);
+        for (auto *st : prog->stmt()) {
+            auto *cs = st->compound_stmt();
+            if (!cs) continue;
+            if (auto *fd = cs->funcdef()) {
+                funcArity[fd->ID()->getText()] = paramArity(fd, false);
+            } else if (auto *cd = cs->classdef()) {
+                std::string name = cd->ID()->getText();
+                classCtorArity[name] = {0, 0};  // implicit no-arg if no __init__
+                if (auto *suite = cd->suite(); !suite->simple_stmt()) {
+                    for (auto *cst : suite->stmt())
+                        if (auto *ccs = cst->compound_stmt())
+                            if (auto *cfd = ccs->funcdef())
+                                if (cfd->ID()->getText() == "__init__") {
+                                    classCtorArity[name] = paramArity(cfd, true);
+                                    break;
+                                }
+                }
+            }
+        }
+    }
+
+    std::pair<int, int> paramArity(P::FuncdefContext *fd, bool skipSelf) {
+        int req = 0, total = 0;
+        if (auto *ps = fd->parameters())
+            for (auto *p : ps->param()) {
+                if (skipSelf && p->ID()->getText() == "self") continue;
+                total++;
+                if (!p->ASSIGN()) req++;
+            }
+        return {req, total};
+    }
+
+    void collectDefStmt(P::StmtContext *st, std::set<std::string> &out) {
+        if (auto *ss = st->simple_stmt()) { collectDefSimple(ss, out); return; }
+        auto *cs = st->compound_stmt();
+        if (auto *i = cs->if_stmt()) {
+            for (auto *s : i->suite()) collectDefSuite(s, out);
+        } else if (auto *w = cs->while_stmt()) {
+            for (auto *s : w->suite()) collectDefSuite(s, out);
+        } else if (auto *f = cs->for_stmt()) {
+            collectFromTargetList(f->target_list(), out);
+            for (auto *s : f->suite()) collectDefSuite(s, out);
+        } else if (auto *t = cs->try_stmt()) {
+            for (auto *s : t->suite()) collectDefSuite(s, out);
+            for (auto *ec : t->except_clause())
+                if (ec->ID()) out.insert(ec->ID()->getText());
+        } else if (auto *fd = cs->funcdef()) {
+            out.insert(fd->ID()->getText());
+        } else if (auto *cd = cs->classdef()) {
+            out.insert(cd->ID()->getText());
+        }
+    }
+
+    void collectDefSuite(P::SuiteContext *s, std::set<std::string> &out) {
+        if (auto *ss = s->simple_stmt()) { collectDefSimple(ss, out); return; }
+        for (auto *st : s->stmt()) collectDefStmt(st, out);
+    }
+
+    void collectDefSimple(P::Simple_stmtContext *ss, std::set<std::string> &out) {
+        auto *sm = ss->small_stmt();
+        if (auto *es = sm->expr_stmt()) {
+            auto tls = es->testlist();
+            if (es->annassign()) {
+                for (auto *e : tls[0]->expr())
+                    if (auto *id = asIdAtomCtx(e)) out.insert(id->ID()->getText());
+            } else if (!es->ASSIGN().empty()) {
+                for (size_t i = 0; i + 1 < tls.size(); i++)
+                    for (auto *e : tls[i]->expr())
+                        if (auto *id = asIdAtomCtx(e)) out.insert(id->ID()->getText());
+            }
+        } else if (auto *im = sm->import_stmt()) {
+            if (im->FROM()) {
+                if (auto *il = im->import_list())
+                    if (!il->STAR())
+                        for (auto *id : il->ID()) out.insert(id->getText());
+            } else {
+                if (im->AS()) out.insert(im->ID()->getText());
+                else if (auto *dn = im->dotted_name()) out.insert(dn->ID(0)->getText());
+            }
+        }
+    }
+
+    void collectFromTargetList(P::Target_listContext *tl, std::set<std::string> &out) {
+        for (auto *t : tl->target()) {
+            if (t->ID()) out.insert(t->ID()->getText());
+            else if (t->target_list()) collectFromTargetList(t->target_list(), out);
+        }
+    }
+
+    // -------- main pass: check uses --------
+
+    void analyzeStmt(P::StmtContext *st, std::set<std::string> &locals,
+                     int inLoop, int inFunc) {
+        if (auto *ss = st->simple_stmt()) { analyzeSimple(ss, locals, inLoop, inFunc); return; }
+        auto *cs = st->compound_stmt();
+        if (auto *i = cs->if_stmt()) {
+            for (auto *e : i->expr()) analyzeExpr(e, locals, inFunc);
+            for (auto *s : i->suite()) analyzeSuite(s, locals, inLoop, inFunc);
+        } else if (auto *w = cs->while_stmt()) {
+            analyzeExpr(w->expr(), locals, inFunc);
+            for (auto *s : w->suite()) analyzeSuite(s, locals, inLoop + 1, inFunc);
+        } else if (auto *f = cs->for_stmt()) {
+            for (auto *e : f->testlist()->expr()) analyzeExpr(e, locals, inFunc);
+            for (auto *s : f->suite()) analyzeSuite(s, locals, inLoop + 1, inFunc);
+        } else if (auto *tt = cs->try_stmt()) {
+            for (auto *s : tt->suite()) analyzeSuite(s, locals, inLoop, inFunc);
+            for (auto *ec : tt->except_clause())
+                if (ec->expr()) analyzeExpr(ec->expr(), locals, inFunc);
+        } else if (auto *fd = cs->funcdef()) {
+            analyzeFunction(fd, /*isMethod=*/false);
+        } else if (auto *cd = cs->classdef()) {
+            analyzeClass(cd);
+        }
+    }
+
+    void analyzeSuite(P::SuiteContext *s, std::set<std::string> &locals,
+                      int inLoop, int inFunc) {
+        if (auto *ss = s->simple_stmt()) { analyzeSimple(ss, locals, inLoop, inFunc); return; }
+        for (auto *st : s->stmt()) analyzeStmt(st, locals, inLoop, inFunc);
+    }
+
+    void analyzeSimple(P::Simple_stmtContext *ss, std::set<std::string> &locals,
+                       int inLoop, int inFunc) {
+        auto *sm = ss->small_stmt();
+        if (auto *es = sm->expr_stmt()) {
+            if (auto *ann = es->annassign()) {
+                if (auto *tl = ann->testlist())
+                    for (auto *e : tl->expr()) analyzeExpr(e, locals, inFunc);
+            } else {
+                auto tls = es->testlist();
+                if (es->ASSIGN().empty()) {
+                    for (auto *e : tls[0]->expr()) analyzeExpr(e, locals, inFunc);
+                } else {
+                    for (auto *e : tls.back()->expr()) analyzeExpr(e, locals, inFunc);
+                    for (size_t i = 0; i + 1 < tls.size(); i++)
+                        for (auto *e : tls[i]->expr())
+                            if (!asIdAtomCtx(e)) analyzeExpr(e, locals, inFunc);
+                }
+            }
+        } else if (auto *rs = sm->return_stmt()) {
+            if (inFunc <= 0) addErr(rs->RETURN()->getSymbol(), "'return' outside function");
+            if (auto *tl = rs->testlist())
+                for (auto *e : tl->expr()) analyzeExpr(e, locals, inFunc);
+        } else if (auto *fs = sm->flow_stmt()) {
+            if (inLoop <= 0) {
+                if (fs->BREAK()) addErr(fs->BREAK()->getSymbol(), "'break' outside loop");
+                else addErr(fs->CONTINUE()->getSymbol(), "'continue' outside loop");
+            }
+        } else if (auto *rz = sm->raise_stmt()) {
+            for (auto *e : rz->expr()) analyzeExpr(e, locals, inFunc);
+        }
+    }
+
+    void analyzeFunction(P::FuncdefContext *fd, bool isMethod) {
+        std::set<std::string> locals;
+        if (isMethod) locals.insert("self");
+        if (auto *ps = fd->parameters())
+            for (auto *p : ps->param()) locals.insert(p->ID()->getText());
+        collectDefSuite(fd->suite(), locals);
+        analyzeSuite(fd->suite(), locals, /*inLoop=*/0, /*inFunc=*/1);
+    }
+
+    void analyzeClass(P::ClassdefContext *cd) {
+        if (auto *al = cd->arglist()) {
+            std::set<std::string> empty;
+            for (auto *arg : al->argument())
+                if (auto *pa = dynamic_cast<P::PosArgContext *>(arg))
+                    analyzeExpr(pa->expr(), empty, 0);
+        }
+        auto *suite = cd->suite();
+        if (suite->simple_stmt()) return;
+        for (auto *st : suite->stmt())
+            if (auto *cs = st->compound_stmt())
+                if (auto *fd = cs->funcdef()) analyzeFunction(fd, /*isMethod=*/true);
+    }
+
+    void analyzeExpr(P::ExprContext *e, const std::set<std::string> &locals,
+                     int inFunc) {
+        if (auto *c = dynamic_cast<P::AtomExprContext *>(e)) {
+            analyzeAtom(c->atom(), locals, inFunc);
+        } else if (auto *c = dynamic_cast<P::CallExprContext *>(e)) {
+            analyzeCall(c, locals, inFunc);
+        } else if (auto *c = dynamic_cast<P::IndexExprContext *>(e)) {
+            analyzeExpr(c->expr(), locals, inFunc);
+            auto *sub = c->subscript();
+            if (auto *sl = sub->slice())
+                for (auto *ex : sl->expr()) analyzeExpr(ex, locals, inFunc);
+            else if (auto *ex = sub->expr()) analyzeExpr(ex, locals, inFunc);
+        } else if (auto *c = dynamic_cast<P::MemberExprContext *>(e)) {
+            analyzeExpr(c->expr(), locals, inFunc);
+        } else if (auto *c = dynamic_cast<P::UnaryExprContext *>(e)) {
+            analyzeExpr(c->expr(), locals, inFunc);
+        } else if (auto *c = dynamic_cast<P::MulDivExprContext *>(e)) {
+            for (auto *sub : c->expr()) analyzeExpr(sub, locals, inFunc);
+        } else if (auto *c = dynamic_cast<P::AddSubExprContext *>(e)) {
+            for (auto *sub : c->expr()) analyzeExpr(sub, locals, inFunc);
+        } else if (auto *c = dynamic_cast<P::CompExprContext *>(e)) {
+            for (auto *sub : c->expr()) analyzeExpr(sub, locals, inFunc);
+        } else if (auto *c = dynamic_cast<P::NotExprContext *>(e)) {
+            analyzeExpr(c->expr(), locals, inFunc);
+        } else if (auto *c = dynamic_cast<P::AndExprContext *>(e)) {
+            for (auto *sub : c->expr()) analyzeExpr(sub, locals, inFunc);
+        } else if (auto *c = dynamic_cast<P::OrExprContext *>(e)) {
+            for (auto *sub : c->expr()) analyzeExpr(sub, locals, inFunc);
+        }
+    }
+
+    void analyzeAtom(P::AtomContext *a, const std::set<std::string> &locals,
+                     int inFunc) {
+        if (auto *id = dynamic_cast<P::IdAtomContext *>(a)) {
+            check(id->ID()->getText(), id->ID()->getSymbol(), locals);
+        } else if (auto *l = dynamic_cast<P::ListAtomContext *>(a)) {
+            analyzeListMaker(l->list_maker(), locals, inFunc);
+        } else if (auto *sd = dynamic_cast<P::SetDictAtomContext *>(a)) {
+            analyzeSetDict(sd->set_or_dict(), locals, inFunc);
+        } else if (auto *g = dynamic_cast<P::GroupOrTupleAtomContext *>(a)) {
+            if (auto *tl = g->testlist())
+                for (auto *e : tl->expr()) analyzeExpr(e, locals, inFunc);
+        }
+    }
+
+    void analyzeListMaker(P::List_makerContext *lm,
+                          const std::set<std::string> &locals, int inFunc) {
+        if (auto *cc = lm->comp_clause()) analyzeComp(lm->expr(0), cc, locals, inFunc);
+        else for (auto *e : lm->expr()) analyzeExpr(e, locals, inFunc);
+    }
+
+    void analyzeSetDict(P::Set_or_dictContext *sd,
+                        const std::set<std::string> &locals, int inFunc) {
+        if (auto *cc = sd->comp_clause()) {
+            if (!sd->dict_kv().empty()) {
+                auto *kv = sd->dict_kv(0);
+                analyzeExpr(cc->expr(0), locals, inFunc);
+                std::set<std::string> inner = locals;
+                for (auto *t : cc->target_list()->target())
+                    if (t->ID()) inner.insert(t->ID()->getText());
+                if (cc->IF()) analyzeExpr(cc->expr(1), inner, inFunc);
+                analyzeExpr(kv->expr(0), inner, inFunc);
+                analyzeExpr(kv->expr(1), inner, inFunc);
+            } else {
+                analyzeComp(sd->expr(0), cc, locals, inFunc);
+            }
+        } else {
+            for (auto *kv : sd->dict_kv()) {
+                analyzeExpr(kv->expr(0), locals, inFunc);
+                analyzeExpr(kv->expr(1), locals, inFunc);
+            }
+            for (auto *e : sd->expr()) analyzeExpr(e, locals, inFunc);
+        }
+    }
+
+    void analyzeComp(P::ExprContext *body, P::Comp_clauseContext *cc,
+                     const std::set<std::string> &locals, int inFunc) {
+        analyzeExpr(cc->expr(0), locals, inFunc);
+        std::set<std::string> inner = locals;
+        for (auto *t : cc->target_list()->target())
+            if (t->ID()) inner.insert(t->ID()->getText());
+        if (cc->IF()) analyzeExpr(cc->expr(1), inner, inFunc);
+        analyzeExpr(body, inner, inFunc);
+    }
+
+    void analyzeCall(P::CallExprContext *c, const std::set<std::string> &locals,
+                     int inFunc) {
+        analyzeExpr(c->expr(), locals, inFunc);
+        int argc = 0;
+        if (auto *al = c->arglist()) {
+            argc = (int)al->argument().size();
+            for (auto *arg : al->argument()) {
+                if (auto *pa = dynamic_cast<P::PosArgContext *>(arg))
+                    analyzeExpr(pa->expr(), locals, inFunc);
+                else if (auto *ka = dynamic_cast<P::KwArgContext *>(arg))
+                    analyzeExpr(ka->expr(), locals, inFunc);
+            }
+        }
+        // Arity check only for a direct identifier callee with a known signature.
+        if (auto *id = asIdAtomCtx(c->expr())) {
+            std::string name = id->ID()->getText();
+            std::pair<int, int> arity{-1, -1};
+            if (auto it = builtinArity().find(name); it != builtinArity().end()) arity = it->second;
+            else if (auto it = funcArity.find(name); it != funcArity.end()) arity = it->second;
+            else if (auto it = classCtorArity.find(name); it != classCtorArity.end()) arity = it->second;
+            if (arity.first >= 0 && (argc < arity.first || argc > arity.second)) {
+                std::string msg = "'" + name + "' expects ";
+                if (arity.first == arity.second)
+                    msg += std::to_string(arity.first) + (arity.first == 1 ? " argument" : " arguments");
+                else
+                    msg += std::to_string(arity.first) + " to " + std::to_string(arity.second) + " arguments";
+                msg += " but got " + std::to_string(argc);
+                addErr(id->ID()->getSymbol(), msg);
+            }
+        }
+    }
+
+    void check(const std::string &name, antlr4::Token *tok,
+               const std::set<std::string> &locals) {
+        if (locals.count(name)) return;
+        if (moduleNames.count(name)) return;
+        if (builtins().count(name)) return;
+        addErr(tok, "name '" + name + "' is not defined");
+    }
+};
+
 // Returns true on success (out = Rust). On failure, err = formatted error report.
 // Non-static: also called from the web server translation unit (webserver.cpp).
 bool convertSource(const std::string &source, std::string &out, std::string &err) {
@@ -1038,8 +1391,42 @@ bool convertSource(const std::string &source, std::string &out, std::string &err
         err = formatErrors(listener.errors, source);
         return false;
     }
+    SemAnalyzer sem;
+    sem.analyze(tree);
+    if (!sem.errors.empty()) {
+        err = formatErrors(sem.errors, source);
+        return false;
+    }
     RustGen gen;
     out = gen.generate(tree);
+    return true;
+}
+
+// Syntax-only check: lex + parse, no code generation. Used by the web UI
+// to give live feedback as the user types.
+bool checkSyntax(const std::string &source, std::string &err) {
+    antlr4::ANTLRInputStream input(source);
+    PythonRustLexer lexer(&input);
+    antlr4::CommonTokenStream tokens(&lexer);
+    PythonRustParser parser(&tokens);
+
+    CollectingErrorListener listener;
+    lexer.removeErrorListeners();
+    parser.removeErrorListeners();
+    lexer.addErrorListener(&listener);
+    parser.addErrorListener(&listener);
+
+    P::ProgramContext *tree = parser.program();
+    if (!listener.errors.empty()) {
+        err = formatErrors(listener.errors, source);
+        return false;
+    }
+    SemAnalyzer sem;
+    sem.analyze(tree);
+    if (!sem.errors.empty()) {
+        err = formatErrors(sem.errors, source);
+        return false;
+    }
     return true;
 }
 
@@ -1084,7 +1471,7 @@ int main(int argc, char **argv) {
 
     std::string rust, err;
     if (!convertSource(buf.str(), rust, err)) {
-        std::cerr << err << "Aborting due to syntax error(s).\n";
+        std::cerr << err << "Aborting.\n";
         return 1;
     }
     std::ofstream ofs(outPath, std::ios::binary);

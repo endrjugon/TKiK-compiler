@@ -31,7 +31,11 @@ private:
 
     void resolveTypes();
     int countIndent(const std::string &text) const;
-    std::unique_ptr<antlr4::Token> makeToken(size_t type, const std::string &text);
+    // Pass line=0 for a positionless token, otherwise we attach line/col so
+    // parser-side errors involving synthetic INDENT/DEDENT/NEWLINE tokens
+    // point at the offending line.
+    std::unique_ptr<antlr4::Token> makeToken(size_t type, const std::string &text,
+                                             size_t line = 0, size_t col = 0);
     bool isOpen(size_t t) const { return t == T_LPAREN || t == T_LBRACK || t == T_LBRACE; }
     bool isClose(size_t t) const { return t == T_RPAREN || t == T_RBRACK || t == T_RBRACE; }
 };
